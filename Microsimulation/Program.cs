@@ -30,19 +30,19 @@ public sealed class Microsimulation
 
     public static async Task Main(string[] args)
     {
-        // Parse input paths from command line
+        #region Load Parameters from CLI
         var result = Parser.Default.ParseArguments<Options>(args);
         Options options = result.Value;
 
         string protobufFilePath = options.population;
         string assumptionsFilePath = options.assumptions;
         string outputFilePath = options.output;
-
+        #endregion
 
         Console.WriteLine("Starting simulation.");
         Random randy = new Random(12000);
 
-        // Load assumptions from file.
+        #region Load Assumptions and population
         Console.WriteLine("Loading assumptions.");
         var assumptions = new Assumptions(assumptionsFilePath);
 
@@ -56,7 +56,6 @@ public sealed class Microsimulation
             "A35-39", "A40-44", "A45-49", "A50-54", "A55-59", "A60-64", "A65-69",
             "A70-74", "A75-79", "A80-84", "A85-89", "A90-94", "A95+"]);
 
-        // Read Protobuf file (population assumptions)
         Console.WriteLine("Loading population.");
         Population population;
 
@@ -64,17 +63,30 @@ public sealed class Microsimulation
         {
             population = Population.Parser.ParseFrom(pb_stream);
         }
+        #endregion
 
+        #region Load synthetic population into the world.
         Console.WriteLine("Creating world.");
         // Create a world and entities
         var world = World.Create();
+
+        var femaleEntity = new ComponentType[] {
+            typeof(Person),
+            typeof(IsFemale),
+            typeof(Health)
+        };
+        var maleEntity = new ComponentType[] {
+            typeof(Person),
+            typeof(IsMale),
+            typeof(Health)
+        };
 
         var females = from person in population.People
                       where person.Demographics.Sex == Sex.Female
                       select person;
         foreach (var person in females)
         {
-            world.Create(new Person
+            world.Create<Person, IsFemale, Health>(new Person
             {
                 ageYears = person.Demographics.AgeYears,
                 ethnicity = person.Demographics.Ethnicity,
@@ -96,7 +108,7 @@ public sealed class Microsimulation
                     select person;
         foreach (var person in males)
         {
-            world.Create(new Person
+            world.Create<Person, IsMale, Health>(new Person
             {
                 ageYears = person.Demographics.AgeYears,
                 ethnicity = person.Demographics.Ethnicity,
@@ -112,39 +124,31 @@ public sealed class Microsimulation
             }
             );
         }
+        #endregion
 
-        var timer = System.Diagnostics.Stopwatch.StartNew();
-        Int128 sumOfAges;
-        float meanAge = 0;
-        var commandBuffer = new CommandBuffer(world, 256);
-        var femaleEntity = new ComponentType[] { 
-            typeof(Person),
-            typeof(IsFemale),
-            typeof(Health) 
-        };
-        var maleEntity = new ComponentType[] {
-            typeof(Person),
-            typeof(IsMale),
-            typeof(Health) 
-        };
-
+        #region Iterate over period of the simuation
         Console.WriteLine("Starting simlation");
-        // Iterate over twenty years 
+        var commandBuffer = new CommandBuffer(world, 256);
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+
         for (uint year = 2021; year < 2041; year++)
         {
-            // Increment age by one year.
+            Int128 sumOfAges;
+            float meanAge = 0;
+
+            #region Increment everyone's age by one year.
             world.InlineQuery<AgeUpdate, Person>(in new QueryDescription()
                                                         .WithAll<Person>());
+            #endregion
 
-            // Female mortalities and births
+            #region Calculate female mortality and new births.
             uint femaleMortality = 0;
             uint births = 0;
             var queryFemales = new QueryDescription().WithAll<IsFemale>();
             world.Query(in queryFemales, (Entity entity, ref Person person) =>
             {
                 uint ageIndex = Math.Min(person.ageYears, 100);
-                double mortalityProbability = femaleMortalityRate[ageIndex];
-                if (randy.NextDouble() < mortalityProbability)
+                if (randy.NextDouble() < femaleMortalityRate[ageIndex])
                 {
                     commandBuffer.Destroy(in entity);
                     femaleMortality++;
@@ -166,7 +170,7 @@ public sealed class Microsimulation
                     }
                     commandBuffer.Set(in newEntity, new Person
                     {
-                        // Set childs ethnicity to mother's.
+                        // Set child's ethnicity to mother's.
                         ethnicity = person.ethnicity,
                     });
                     commandBuffer.Set(in newEntity, new Health
@@ -176,26 +180,26 @@ public sealed class Microsimulation
                     });
                 }
             });
+            #endregion
 
-            // Male mortalities
+            #region Calculate male mortality
             uint maleMortality = 0;
-            var query_males = new QueryDescription().WithAll<Person, IsMale>();
-            world.Query(in query_males, (Entity entity, ref Person person) =>
+            var queryMales = new QueryDescription().WithAll<Person, IsMale>();
+            world.Query(in queryMales, (Entity entity, ref Person person) =>
             {
                 uint ageIndex = Math.Min(person.ageYears, 100);
-                double mortalityProbability;
-                mortalityProbability = maleMortalityRate[ageIndex];
-                if (randy.NextDouble() < mortalityProbability)
+                if (randy.NextDouble() < maleMortalityRate[ageIndex])
                 {
                     commandBuffer.Destroy(in entity);
                     maleMortality++;
                 }
             });
+            #endregion
 
             // Apply structural changes.
             commandBuffer.Playback();
 
-            // Calculate mean age of population
+            #region Calculate and display in-year statistics.
             sumOfAges = 0;
             world.Query(in new QueryDescription().WithAll<Person>(),
                 (ref Person person) =>
@@ -213,8 +217,9 @@ public sealed class Microsimulation
                                         births,
                                         femaleMortality,
                                         maleMortality);
+            #endregion
 
-            // Generate population pyramid for year.
+            #region Generate Population pyramid.
             uint[] yearLabels = new uint[rowHeadings.Count()];
             for (uint i = 0; i < yearLabels.Count(); i++)
             {
@@ -240,11 +245,13 @@ public sealed class Microsimulation
             PrimitiveDataFrameColumn<uint> Male5yrAge = new("Males", male5yrAgePersons);
             DataFrame populationPyramid = new(yearLabel, rowHeadings, female5yrAge, Male5yrAge);
             populationPyramids.Add(populationPyramid);
+            #endregion
         }
-
         timer.Stop();
         Console.WriteLine(timer.ElapsedMilliseconds.ToString());
+        #endregion region
 
+        #region Output Results to file.
         // Concatenate population pyramids and output to Parquet file.
         DataFrame outputPyramids = populationPyramids.First().Append(
                     from populationPyramid in populationPyramids.Skip(1)
@@ -253,5 +260,6 @@ public sealed class Microsimulation
                 );
         Export.ToParquet(outputPyramids, outputFilePath);
         Console.WriteLine("End.");
+        #endregion
     }
 }
