@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "Microsimulation": {
+      "commandName": "Project",
+      "commandLineArgs": "--population \"C:\\\\workspace\\\\Data\\\\Population 2020\\\\bristol.pb\\\\bristol.pb\"\r\n--assumptions \"C:\\\\workspace\\\\Data\\\\Population 2020\\\\assumptions\\\\assumptions.parquet\"\r\n--output \"C:\\\\workspace\\\\Data\\\\Population 2020\\\\output\\\\populationPyramid.parquet\""
+    }
+  }
+}
